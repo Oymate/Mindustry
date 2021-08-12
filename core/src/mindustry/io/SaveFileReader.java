@@ -50,7 +50,11 @@ public abstract class SaveFileReader{
     "holostone-wall", "dacite-wall",
     "rock", "boulder",
     "snowrock", "snow-boulder",
-    "cliffs", "stone-wall", 
+    "cliffs", "stone-wall",
+    "craters", "crater-stone",
+    "deepwater", "deep-water",
+    "water", "shallow-water",
+    "slag", "molten-slag",
 
     "cryofluidmixer", "cryofluid-mixer"
     );
@@ -102,8 +106,8 @@ public abstract class SaveFileReader{
         if(!isByte){
             output.writeInt(length);
         }else{
-            if(length > Short.MAX_VALUE){
-                throw new IOException("Byte write length exceeded: " + length + " > " + Short.MAX_VALUE);
+            if(length > 65535){
+                throw new IOException("Byte write length exceeded: " + length + " > 65535");
             }
             output.writeShort(length);
         }

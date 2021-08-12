@@ -98,7 +98,7 @@ public class UnitFactory extends UnitBlock{
             table.row();
             for(var plan : p){
                 if(plan.unit.unlockedNow()){
-                    table.image(plan.unit.icon(Cicon.small)).size(8 * 3).padRight(2).right();
+                    table.image(plan.unit.uiIcon).size(8 * 3).padRight(2).right();
                     table.add(plan.unit.localizedName).left();
                     table.add(Strings.autoFixed(plan.time / 60f, 1) + " " + Core.bundle.get("unit.seconds")).color(Color.lightGray).padLeft(12).left();
                     table.row();
@@ -143,12 +143,13 @@ public class UnitFactory extends UnitBlock{
         @Override
         public Object senseObject(LAccess sensor){
             if(sensor == LAccess.config) return currentPlan == -1 ? null : plans.get(currentPlan).unit;
+            if(sensor == LAccess.progress) return Mathf.clamp(fraction());
             return super.senseObject(sensor);
         }
 
         @Override
         public void buildConfiguration(Table table){
-            Seq<UnitType> units = Seq.with(plans).map(u -> u.unit).filter(u -> u.unlockedNow());
+            Seq<UnitType> units = Seq.with(plans).map(u -> u.unit).filter(u -> u.unlockedNow() && !u.isBanned());
 
             if(units.any()){
                 ItemSelection.buildTable(table, units, () -> currentPlan == -1 ? null : plans.get(currentPlan).unit, unit -> configure(plans.indexOf(u -> u.unit == unit)));
@@ -172,7 +173,7 @@ public class UnitFactory extends UnitBlock{
             table.table(t -> {
                 t.left();
                 t.image().update(i -> {
-                    i.setDrawable(currentPlan == -1 ? Icon.cancel : reg.set(plans.get(currentPlan).unit.icon(Cicon.medium)));
+                    i.setDrawable(currentPlan == -1 ? Icon.cancel : reg.set(plans.get(currentPlan).unit.uiIcon));
                     i.setScaling(Scaling.fit);
                     i.setColor(currentPlan == -1 ? Color.lightGray : Color.white);
                 }).size(32).padBottom(-4).padRight(2);
@@ -212,8 +213,8 @@ public class UnitFactory extends UnitBlock{
             }
 
             if(consValid() && currentPlan != -1){
-                time += edelta() * speedScl * Vars.state.rules.unitBuildSpeedMultiplier;
-                progress += edelta() * Vars.state.rules.unitBuildSpeedMultiplier;
+                time += edelta() * speedScl * Vars.state.rules.unitBuildSpeed(team);
+                progress += edelta() * Vars.state.rules.unitBuildSpeed(team);
                 speedScl = Mathf.lerpDelta(speedScl, 1f, 0.05f);
             }else{
                 speedScl = Mathf.lerpDelta(speedScl, 0f, 0.05f);
@@ -223,6 +224,12 @@ public class UnitFactory extends UnitBlock{
 
             if(currentPlan != -1 && payload == null){
                 UnitPlan plan = plans.get(currentPlan);
+
+                //make sure to reset plan when the unit got banned after placement
+                if(plan.unit.isBanned()){
+                    currentPlan = -1;
+                    return;
+                }
 
                 if(progress >= plan.time && consValid()){
                     progress %= 1f;
