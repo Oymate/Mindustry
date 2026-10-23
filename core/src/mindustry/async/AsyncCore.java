@@ -2,7 +2,7 @@ package mindustry.async;
 
 import arc.*;
 import arc.struct.*;
-import arc.util.async.*;
+import arc.util.*;
 import mindustry.game.EventType.*;
 
 import java.util.concurrent.*;
@@ -12,7 +12,8 @@ import static mindustry.Vars.*;
 public class AsyncCore{
     //all processes to be executed each frame
     public final Seq<AsyncProcess> processes = Seq.with(
-        new PhysicsProcess()
+        unitPhysics = new PhysicsProcess(),
+        avoidance = new AvoidanceProcess()
     );
 
     //futures to be awaited
@@ -77,7 +78,7 @@ public class AsyncCore{
 
     private void complete(){
         //wait for all threads to stop processing
-        for(Future future : futures){
+        for(var future : futures){
             try{
                 future.get();
             }catch(Throwable t){

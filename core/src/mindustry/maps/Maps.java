@@ -9,7 +9,6 @@ import arc.graphics.*;
 import arc.struct.IntSet.*;
 import arc.struct.*;
 import arc.util.*;
-import arc.util.async.*;
 import arc.util.io.*;
 import arc.util.serialization.*;
 import mindustry.*;
@@ -20,11 +19,11 @@ import mindustry.game.*;
 import mindustry.io.*;
 import mindustry.maps.MapPreviewLoader.*;
 import mindustry.maps.filters.*;
+import mindustry.service.*;
 import mindustry.world.*;
 import mindustry.world.blocks.storage.*;
 
 import java.io.*;
-import java.util.concurrent.*;
 
 import static mindustry.Vars.*;
 
@@ -34,20 +33,23 @@ public class Maps{
     NoiseFilter::new, ScatterFilter::new, TerrainFilter::new, DistortFilter::new,
     RiverNoiseFilter::new, OreFilter::new, OreMedianFilter::new, MedianFilter::new,
     BlendFilter::new, MirrorFilter::new, ClearFilter::new, CoreSpawnFilter::new,
-    EnemySpawnFilter::new, SpawnPathFilter::new
+    EnemySpawnFilter::new, SpawnPathFilter::new, LogicFilter::new
     };
 
     /** List of all built-in maps. Filenames only. */
-    private static String[] defaultMapNames = {"maze", "fortress", "labyrinth", "islands", "tendrils", "caldera", "wasteland", "shattered", "fork", "triad", "mudFlats", "moltenLake", "archipelago", "debrisField", "veins", "glacier", "passage"};
+    private static String[] defaultMapNames = {"maze", "fortress", "labyrinth", "islands", "tendrils", "caldera", "wasteland", "shattered", "fork", "triad", "mudFlats", "moltenLake", "archipelago", "debrisField", "domain", "veins", "glacier", "passage"};
     /** Maps tagged as PvP */
     private static String[] pvpMaps = {"veins", "glacier", "passage"};
+    /** If true, the defaultMapNames are prefixed with default/ */
+    private static boolean useDefaultFolder = true;
 
     /** All maps stored in an ordered array. */
     private Seq<Map> maps = new Seq<>();
     private ShuffleMode shuffleMode = ShuffleMode.all;
-    private @Nullable MapProvider shuffler;
 
-    private ExecutorService executor = Threads.executor(3);
+    private @Nullable MapProvider shuffler;
+    private @Nullable Map nextMapOverride;
+
     private ObjectSet<Map> previewList = new ObjectSet<>();
 
     public ShuffleMode getShuffleMode(){
@@ -63,8 +65,19 @@ public class Maps{
         this.shuffler = provider;
     }
 
+    /** Set the map that will override the next selected map. */
+    public void setNextMapOverride(Map nextMapOverride){
+        this.nextMapOverride = nextMapOverride;
+    }
+
     /** @return the next map to shuffle to. May be null, in which case the server should be stopped. */
     public @Nullable Map getNextMap(Gamemode mode, @Nullable Map previous){
+        if(nextMapOverride != null){
+            Map next = nextMapOverride;
+            nextMapOverride = null;
+            return next;
+        }
+
         if(shuffler != null) return shuffler.next(mode, previous);
         return shuffleMode.next(mode, previous);
     }
@@ -81,7 +94,12 @@ public class Maps{
 
     /** Returns a list of only default maps. */
     public Seq<Map> defaultMaps(){
-        return maps.select(m -> !m.custom);
+        return maps.select(m -> !m.custom && m.mod == null);
+    }
+
+    /** Returns a list of only modded maps. */
+    public Seq<Map> moddedMaps(){
+        return maps.select(m -> m.mod != null);
     }
 
     public Map byName(String name){
@@ -115,7 +133,7 @@ public class Maps{
         //defaults; must work
         try{
             for(String name : defaultMapNames){
-                Fi file = Core.files.internal("maps/" + name + "." + mapExtension);
+                Fi file = Core.files.internal((useDefaultFolder ? "maps/default/" : "maps/") + name + "." + mapExtension);
                 loadMap(file, false);
             }
         }catch(IOException e){
@@ -123,7 +141,7 @@ public class Maps{
         }
 
         //custom
-        for(Fi file : customMapDirectory.list()){
+        customMapDirectory.walk(file -> {
             try{
                 if(file.extension().equalsIgnoreCase(mapExtension)){
                     loadMap(file, true);
@@ -132,11 +150,13 @@ public class Maps{
                 Log.err("Failed to load custom map file '@'!", file);
                 Log.err(e);
             }
-        }
+        });
 
         //workshop
         for(Fi file : platform.getWorkshopContent(Map.class)){
             try{
+                //HACK this achievement isn't completing for some reason
+                Achievement.downloadMapWorkshop.complete();
                 Map map = loadMap(file, false);
                 map.workshop = true;
                 map.tags.put("steamid", file.parent().name());
@@ -169,11 +189,15 @@ public class Maps{
         load();
     }
 
+    public Map saveMap(ObjectMap<String, String> baseTags){
+        return saveMap(baseTags, true);
+    }
+
     /**
      * Save a custom map to the directory. This updates all values and stored data necessary.
      * The tags are copied to prevent mutation later.
      */
-    public Map saveMap(ObjectMap<String, String> baseTags){
+    public Map saveMap(ObjectMap<String, String> baseTags, boolean embedAssets){
 
         try{
             StringMap tags = new StringMap(baseTags);
@@ -193,12 +217,13 @@ public class Maps{
                 maps.remove(other);
                 file = other.file;
             }else{
-                file = findFile();
+                file = findFile(name);
             }
 
             //create map, write it, etc etc etc
             Map map = new Map(file, world.width(), world.height(), tags, true);
-            MapIO.writeMap(file, map);
+            fogControl.resetFog();
+            MapIO.writeMap(file, map, embedAssets);
 
             if(!headless){
                 //reset attributes
@@ -224,10 +249,13 @@ public class Maps{
                 }
 
                 Pixmap pix = MapIO.generatePreview(world.tiles);
-                executor.submit(() -> map.previewFile().writePng(pix));
                 writeCache(map);
 
                 map.texture = new Texture(pix);
+                mainExecutor.submit(() -> {
+                    map.previewFile().writePng(pix);
+                    pix.dispose();
+                });
             }
             maps.add(map);
             maps.sort();
@@ -239,9 +267,9 @@ public class Maps{
         }
     }
 
-    /** Import a map, then save it. This updates all values and stored data necessary. */
-    public void importMap(Fi file) throws IOException{
-        Fi dest = findFile();
+    /** Imports a map, then saves it. This updates all values and stored data necessary. */
+    public Map importMap(Fi file) throws IOException{
+        Fi dest = findFile(file.name());
         file.copyTo(dest);
 
         Map map = loadMap(dest, true);
@@ -260,6 +288,8 @@ public class Maps{
         if(error[0] != null){
             throw new IOException(error[0]);
         }
+
+        return map;
     }
 
     /** Attempts to run the following code;
@@ -296,40 +326,17 @@ public class Maps{
     public Seq<GenerateFilter> readFilters(String str){
         if(str == null || str.isEmpty()){
             //create default filters list
-            Seq<GenerateFilter> filters =  Seq.with(
-                new ScatterFilter(){{
-                    flooronto = Blocks.snow;
-                    block = Blocks.snowBoulder;
-                }},
-                new ScatterFilter(){{
-                    flooronto = Blocks.ice;
-                    block = Blocks.snowBoulder;
-                }},
-                new ScatterFilter(){{
-                    flooronto = Blocks.sand;
-                    block = Blocks.sandBoulder;
-                }},
-                new ScatterFilter(){{
-                    flooronto = Blocks.darksand;
-                    block = Blocks.basaltBoulder;
-                }},
-                new ScatterFilter(){{
-                    flooronto = Blocks.basalt;
-                    block = Blocks.basaltBoulder;
-                }},
-                new ScatterFilter(){{
-                    flooronto = Blocks.dacite;
-                    block = Blocks.daciteBoulder;
-                }},
-                new ScatterFilter(){{
-                    flooronto = Blocks.stone;
-                    block = Blocks.boulder;
-                }},
-                new ScatterFilter(){{
-                    flooronto = Blocks.shale;
-                    block = Blocks.shaleBoulder;
-                }}
-            );
+
+            Seq<GenerateFilter> filters = new Seq<>();
+
+            for(Block block : content.blocks()){
+                if(block.isFloor() && block.inEditor && block.asFloor().decoration != Blocks.air){
+                    var filter = new ScatterFilter();
+                    filter.flooronto = block.asFloor();
+                    filter.block = block.asFloor().decoration;
+                    filters.add(filter);
+                }
+            }
 
             addDefaultOres(filters);
 
@@ -381,7 +388,7 @@ public class Maps{
             //try to load preview
             if(map.previewFile().exists()){
                 //this may fail, but calls queueNewPreview
-                Core.assets.load(new AssetDescriptor<>(map.previewFile().path() + "." + mapExtension, Texture.class, new MapPreviewParameter(map))).loaded = t -> map.texture = (Texture)t;
+                Core.assets.load(new AssetDescriptor<>(map.previewFile().path() + "." + mapExtension, Texture.class, new MapPreviewParameter(map))).loaded = t -> map.texture = t;
 
                 try{
                     readCache(map);
@@ -414,7 +421,7 @@ public class Maps{
             //this has to be done synchronously!
             Pixmap pix = MapIO.generatePreview(map);
             map.texture = new Texture(pix);
-            executor.submit(() -> {
+            mainExecutor.submit(() -> {
                 try{
                     map.previewFile().writePng(pix);
                     writeCache(map);
@@ -454,13 +461,19 @@ public class Maps{
     }
 
     /** Find a new filename to put a map to. */
-    private Fi findFile(){
-        //find a map name that isn't used.
-        int i = maps.size;
-        while(customMapDirectory.child("map_" + i + "." + mapExtension).exists()){
-            i++;
+    private Fi findFile(String unsanitizedName){
+        String name = Strings.sanitizeFilename(unsanitizedName);
+        if(name.isEmpty()) name = "blank";
+
+        Fi result = null;
+        int index = 0;
+
+        while(result == null || result.exists()){
+            result = customMapDirectory.child(name + (index == 0 ? "" : "_" + index) + "." + mapExtension);
+            index ++;
         }
-        return customMapDirectory.child("map_" + i + "." + mapExtension);
+
+        return result;
     }
 
     private Map loadMap(Fi file, boolean custom) throws IOException{

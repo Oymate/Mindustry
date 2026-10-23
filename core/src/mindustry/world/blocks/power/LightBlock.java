@@ -1,6 +1,5 @@
 package mindustry.world.blocks.power;
 
-import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.math.*;
 import arc.math.geom.*;
@@ -13,7 +12,9 @@ import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.input.*;
 import mindustry.logic.*;
+import mindustry.ui.*;
 import mindustry.world.*;
+import mindustry.world.meta.*;
 
 import static mindustry.Vars.*;
 
@@ -28,6 +29,7 @@ public class LightBlock extends Block{
         update = true;
         configurable = true;
         saveConfig = true;
+        envEnabled |= Env.space;
         swapDiagonalPlacement = true;
 
         config(Integer.class, (LightBuild tile, Integer value) -> tile.color = value);
@@ -35,9 +37,10 @@ public class LightBlock extends Block{
 
     @Override
     public void init(){
-        //double needed for some reason
-        lightRadius = radius*2f;
+        lightRadius = radius*2.5f;
+        lightClipSize = Math.max(lightClipSize, lightRadius * 3f);
         emitLight = true;
+
         super.init();
     }
 
@@ -54,27 +57,47 @@ public class LightBlock extends Block{
         Placement.calculateNodes(points, this, rotation, (point, other) -> point.dst2(other) <= placeRadius2);
     }
 
+    @Override
+    public int minimapColor(Tile tile){
+        var build = (LightBuild)tile.build;
+        //make sure A is 255
+        return build == null ? 0 : build.color | 0xff;
+    }
+
     public class LightBuild extends Building{
         public int color = Pal.accent.rgba();
         public float smoothTime = 1f;
 
         @Override
+        public void configured(Unit player, Object value){
+            super.configured(player, value);
+
+            if(!headless) renderer.minimap.update(tile);
+        }
+
+        @Override
         public void control(LAccess type, double p1, double p2, double p3, double p4){
             if(type == LAccess.color){
-                color = Color.rgba8888((float)p1, (float)p2, (float)p3, 1f);
+                color = Tmp.c1.fromDouble(p1).rgba8888();
+
+                if(!headless) renderer.minimap.update(tile);
             }
 
             super.control(type, p1, p2, p3, p4);
         }
 
         @Override
+        public double sense(LAccess sensor){
+            if(sensor == LAccess.color) return Tmp.c1.set(color).toDoubleBits();
+            return super.sense(sensor);
+        }
+
+        @Override
         public void draw(){
             super.draw();
-            Draw.blend(Blending.additive);
-            Draw.color(Tmp.c1.set(color), efficiency() * 0.3f);
+            Draw.color(Tmp.c1.set(color).a(0.6f));
             Draw.rect(topRegion, x, y);
             Draw.color();
-            Draw.blend();
         }
 
         @Override
@@ -84,15 +107,25 @@ public class LightBlock extends Block{
 
         @Override
         public void buildConfiguration(Table table){
-            table.button(Icon.pencil, () -> {
+            table.button(Icon.pencil, Styles.cleari, () -> {
                 ui.picker.show(Tmp.c1.set(color).a(0.5f), false, res -> configure(res.rgba()));
                 deselect();
             }).size(40f);
         }
 
         @Override
+        public boolean onConfigureBuildTapped(Building other){
+            if(this == other){
+                deselect();
+                return false;
+            }
+
+            return true;
+        }
+
+        @Override
         public void drawLight(){
-            Drawf.light(team, x, y, lightRadius * Math.min(smoothTime, 2f), Tmp.c1.set(color), brightness * efficiency());
+            Drawf.light(x, y, lightRadius * Math.min(smoothTime, 2f), Tmp.c1.set(color), brightness * efficiency);
         }
 
         @Override
